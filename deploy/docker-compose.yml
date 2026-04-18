@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vaultguard
+      POSTGRES_PASSWORD: vaultguard
+      POSTGRES_DB: vaultguard
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaultguard"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    environment:
+      VAULTGUARD_DATABASE_DSN: "postgres://vaultguard:vaultguard@postgres:5432/vaultguard?sslmode=disable"
+      VAULTGUARD_REDIS_ADDR: "redis:6379"
+      VAULTGUARD_ISSUER_URL: "http://localhost:8080"
+      VAULTGUARD_ROOT_KEY: "${VAULTGUARD_ROOT_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
+      VAULTGUARD_DEV_TLS: "true"
+      VAULTGUARD_LOG_LEVEL: "debug"
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+      - "9090:9090"   # metrics
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pg_data:
