@@ -77,8 +77,10 @@ make helm-package   # Helm chart
 - [x] Step 1 — `core/identity`: user + client + policy services
 - [x] Step 1 — `core/vault`: crypto, store, lease manager
 - [x] Step 1 — `core/oidc`: JWT issuance, PKCE, provider, key rotation
-- [ ] Step 2 — `server`: HTTP handlers
-- [ ] Step 3 — `cli`: operator commands
-- [ ] Step 4 — `docker-plugin`: credential helper
-- [ ] Step 5 — `k8s-controller`: CRD + controller + webhook
+- [x] Step 2 — `server`: HTTP handlers, TLS, rate limiting, Prometheus metrics
+- [x] Step 3 — `cli`: operator commands (login, secrets, clients, policies, admin)
+- [x] Step 4 — `docker-plugin`: `docker-credential-vaultguard` credential helper
+- [ ] Step 5 — `k8s-controller`: CRD + controller + mutating webhook
 - [ ] Step 6 — `deploy/helm`: production Helm chart
+
+See [ROADMAP.md](ROADMAP.md) for the full project agenda.
