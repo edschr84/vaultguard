@@ -31,5 +31,6 @@ Thumbs.db
 # Go workspace sum (generated)
 go.work.sum
 
-# Memory (Claude internal)
+# Claude internal
 memory/
+.claude/
