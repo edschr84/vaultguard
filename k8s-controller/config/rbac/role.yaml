@@ -1,0 +1,43 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vaultguard-controller-role
+rules:
+  # VaultSecret CRD
+  - apiGroups: ["vaultguard.io"]
+    resources: ["vaultsecrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["vaultguard.io"]
+    resources: ["vaultsecrets/status"]
+    verbs: ["get", "update", "patch"]
+  # K8s Secrets (read credentials, write destination secrets)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vaultguard-controller-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vaultguard-controller-role
+subjects:
+  - kind: ServiceAccount
+    name: vaultguard-controller
+    namespace: vaultguard-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vaultguard-controller
+  namespace: vaultguard-system
