@@ -1,6 +1,6 @@
 # Vaultguard Roadmap
 
-Production-grade, open-source identity and secrets management platform for containerised infrastructure — conceptually similar to Authentik but purpose-built for Docker and Kubernetes pipelines.
+Opinionated secret-access enforcement for containerised workloads. VaultGuard should deny access by default and only release secrets when the calling user or client matches an explicit policy.
 
 ---
 
@@ -74,7 +74,7 @@ Production-grade, open-source identity and secrets management platform for conta
 
 ## Non-Goals (for now)
 
-- UI / web console (CLI + API first)
+- UI / web console
 - Dynamic secret backends (PostgreSQL, AWS IAM) — interfaces stubbed, not implemented
 - Multi-tenancy beyond namespace/mount path prefixes
 - LDAP / SAML federation

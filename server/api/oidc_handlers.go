@@ -1,8 +1,11 @@
 package api
 
 import (
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/vaultguard/core/identity"
 	"github.com/vaultguard/core/oidc"
+	"github.com/vaultguard/core/vault"
+	mw "github.com/vaultguard/server/middleware"
 )
 
 // OIDCHandler handles all OIDC / OAuth2 endpoints.
@@ -22,6 +27,7 @@ type OIDCHandler struct {
 	users      *identity.UserService
 	clients    *identity.ClientService
 	devices    oidc.DeviceCodeStore
+	audit      vault.AuditLogger
 	issuerURL  string
 }
 
@@ -33,6 +39,7 @@ func NewOIDCHandler(
 	users *identity.UserService,
 	clients *identity.ClientService,
 	devices oidc.DeviceCodeStore,
+	audit vault.AuditLogger,
 	issuerURL string,
 ) *OIDCHandler {
 	return &OIDCHandler{
@@ -42,6 +49,7 @@ func NewOIDCHandler(
 		users:      users,
 		clients:    clients,
 		devices:    devices,
+		audit:      audit,
 		issuerURL:  issuerURL,
 	}
 }
@@ -50,9 +58,10 @@ func NewOIDCHandler(
 func (h *OIDCHandler) Routes(r chi.Router) {
 	r.Get("/.well-known/openid-configuration", h.Discovery)
 	r.Get("/.well-known/jwks.json", h.JWKS)
-	r.Get("/authorize", h.Authorize)
-	r.Post("/authorize", h.AuthorizeSubmit)
-	r.Post("/token", h.Token)
+	// Rate-limit the two primary brute-force targets
+	r.With(mw.RateLimitPerIP(30, time.Minute)).Get("/authorize", h.Authorize)
+	r.With(mw.RateLimitPerIP(30, time.Minute)).Post("/authorize", h.AuthorizeSubmit)
+	r.With(mw.RateLimitPerIP(10, time.Minute)).Post("/token", h.Token)
 	r.Post("/token/revoke", h.Revoke)
 	r.Post("/token/introspect", h.Introspect)
 	r.Get("/userinfo", h.UserInfo)
@@ -95,8 +104,14 @@ func (h *OIDCHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate client exists
-	if _, err := h.clients.GetByClientID(r.Context(), clientID); err != nil {
+	client, err := h.clients.GetByClientID(r.Context(), clientID)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_client", "unknown client")
+		return
+	}
+	redirectURI := q.Get("redirect_uri")
+	if !containsString(client.RedirectURIs, redirectURI) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "redirect_uri not registered")
 		return
 	}
 
@@ -108,7 +123,22 @@ func (h *OIDCHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Render minimal HTML login form
+	// Generate a CSRF token for double-submit cookie protection
+	csrfRaw := make([]byte, 16)
+	if _, err := crand.Read(csrfRaw); err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "csrf generation failed")
+		return
+	}
+	csrfToken := hex.EncodeToString(csrfRaw)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "_csrf",
+		Value:    csrfToken,
+		Path:     "/authorize",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
+	})
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, loginFormHTML,
 		clientID,
@@ -119,6 +149,7 @@ func (h *OIDCHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		q.Get("code_challenge"),
 		q.Get("code_challenge_method"),
 		q.Get("response_type"),
+		csrfToken,
 	)
 }
 
@@ -129,6 +160,22 @@ func (h *OIDCHandler) AuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate CSRF double-submit cookie
+	csrfCookie, err := r.Cookie("_csrf")
+	if err != nil || csrfCookie.Value == "" || csrfCookie.Value != r.FormValue("csrf_token") {
+		writeError(w, http.StatusBadRequest, "invalid_request", "CSRF validation failed")
+		return
+	}
+	client, err := h.clients.GetByClientID(r.Context(), r.FormValue("client_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_client", "unknown client")
+		return
+	}
+	if !containsString(client.RedirectURIs, r.FormValue("redirect_uri")) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "redirect_uri not registered")
+		return
+	}
+
 	email := r.FormValue("email")
 	password := r.FormValue("password")
 	redirectURI := r.FormValue("redirect_uri")
@@ -136,6 +183,15 @@ func (h *OIDCHandler) AuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.users.Authenticate(r.Context(), email, password)
 	if err != nil {
+		if h.audit != nil {
+			_ = h.audit.Log(r.Context(), vault.AuditEvent{
+				ActorType: "user",
+				ActorID:   email,
+				Action:    "login",
+				Resource:  "oidc",
+				Outcome:   "failure",
+			})
+		}
 		// Re-render form with error
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -192,7 +248,11 @@ func (h *OIDCHandler) Token(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate secret for confidential clients
-	if client.Type == identity.ClientTypeConfidential && clientSecret != "" {
+	if client.Type == identity.ClientTypeConfidential && clientSecret == "" {
+		writeOAuthError(w, "invalid_client", "client_secret is required")
+		return
+	}
+	if client.Type == identity.ClientTypeConfidential {
 		if !h.clients.ValidateSecret(r.Context(), clientID, clientSecret) {
 			writeOAuthError(w, "invalid_client", "bad client credentials")
 			return
@@ -239,22 +299,34 @@ func (h *OIDCHandler) tokenRefresh(w http.ResponseWriter, r *http.Request, clien
 		return
 	}
 
+	// Allow clients to request a narrower scope; never wider than authorized
+	scope := rtRow.Scope
+	if requested := r.FormValue("scope"); requested != "" {
+		if !isScopeSubset(requested, rtRow.Scope) {
+			writeOAuthError(w, "invalid_scope", "requested scope exceeds authorized scope")
+			return
+		}
+		scope = requested
+	}
+
 	sub := clientID
 	if rtRow.UserID != nil {
 		sub = rtRow.UserID.String()
 	}
 
 	at, err := h.issuer.IssueAccessToken(r.Context(), sub, clientID,
-		[]string{clientID}, rtRow.Scope,
+		[]string{clientID}, scope,
 		tokenTTL(ttls.AccessTokenTTL), nil)
 	if err != nil {
 		writeOAuthError(w, "server_error", err.Error())
 		return
 	}
 
-	// Rotate refresh token
-	_ = h.issuer.RevokeRefreshToken(r.Context(), refreshToken)
-	newRT, err := h.issuer.IssueRefreshToken(r.Context(), clientID, rtRow.UserID, rtRow.Scope, tokenTTL(ttls.RefreshTokenTTL))
+	// Rotate refresh token; log but don't abort if revocation fails — old token expires naturally
+	if err := h.issuer.RevokeRefreshToken(r.Context(), refreshToken); err != nil {
+		slog.Warn("failed to revoke old refresh token during rotation", "err", err)
+	}
+	newRT, err := h.issuer.IssueRefreshToken(r.Context(), clientID, rtRow.UserID, scope, tokenTTL(ttls.RefreshTokenTTL))
 	if err != nil {
 		writeOAuthError(w, "server_error", err.Error())
 		return
@@ -265,7 +337,7 @@ func (h *OIDCHandler) tokenRefresh(w http.ResponseWriter, r *http.Request, clien
 		TokenType:    "Bearer",
 		ExpiresIn:    int(ttls.AccessTokenTTL),
 		RefreshToken: newRT,
-		Scope:        rtRow.Scope,
+		Scope:        scope,
 	})
 }
 
@@ -273,6 +345,18 @@ func (h *OIDCHandler) tokenClientCredentials(w http.ResponseWriter, r *http.Requ
 	scope := r.FormValue("scope")
 	if scope == "" {
 		scope = strings.Join(scopes, " ")
+	} else {
+		// Validate every requested scope is permitted for this client
+		allowed := make(map[string]bool, len(scopes))
+		for _, s := range scopes {
+			allowed[s] = true
+		}
+		for _, s := range strings.Fields(scope) {
+			if !allowed[s] {
+				writeOAuthError(w, "invalid_scope", "scope not permitted for this client")
+				return
+			}
+		}
 	}
 	at, err := h.issuer.IssueAccessToken(r.Context(), clientID, clientID,
 		[]string{clientID}, scope, tokenTTL(ttls.AccessTokenTTL), nil)
@@ -389,9 +473,27 @@ func (h *OIDCHandler) DeviceCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientID := r.FormValue("client_id")
+
+	client, err := h.clients.GetByClientID(r.Context(), clientID)
+	if err != nil {
+		writeOAuthError(w, "invalid_client", "unknown client")
+		return
+	}
+
 	scope := r.FormValue("scope")
 	if scope == "" {
 		scope = "openid"
+	} else {
+		allowed := make(map[string]bool, len(client.AllowedScopes))
+		for _, s := range client.AllowedScopes {
+			allowed[s] = true
+		}
+		for _, s := range strings.Fields(scope) {
+			if !allowed[s] {
+				writeOAuthError(w, "invalid_scope", "scope not permitted for this client")
+				return
+			}
+		}
 	}
 
 	resp, err := h.provider.InitiateDeviceFlow(r.Context(), clientID, scope)
@@ -406,8 +508,24 @@ func (h *OIDCHandler) DeviceCode(w http.ResponseWriter, r *http.Request) {
 // DeviceVerify shows the user-facing device verification page.
 func (h *OIDCHandler) DeviceVerify(w http.ResponseWriter, r *http.Request) {
 	userCode := r.URL.Query().Get("user_code")
+
+	csrfRaw := make([]byte, 16)
+	if _, err := crand.Read(csrfRaw); err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	csrfToken := hex.EncodeToString(csrfRaw)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "_device_csrf",
+		Value:    csrfToken,
+		Path:     "/device",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
+	})
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, deviceVerifyHTML, userCode, userCode)
+	fmt.Fprintf(w, deviceVerifyHTML, userCode, csrfToken, userCode)
 }
 
 // DeviceVerifySubmit processes the user approval/denial of a device code.
@@ -416,6 +534,16 @@ func (h *OIDCHandler) DeviceVerifySubmit(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+
+	// Validate CSRF double-submit cookie
+	csrfCookie, err := r.Cookie("_device_csrf")
+	if err != nil || csrfCookie.Value == "" || csrfCookie.Value != r.FormValue("csrf_token") {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `<h2>Invalid request</h2><p>CSRF validation failed. <a href="/device">Start over</a></p>`)
+		return
+	}
+
 	userCode := r.FormValue("user_code")
 	action := r.FormValue("action")
 	email := r.FormValue("email")
@@ -450,7 +578,32 @@ func (h *OIDCHandler) DeviceVerifySubmit(w http.ResponseWriter, r *http.Request)
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("writeJSON encode failed", "err", err)
+	}
+}
+
+// isScopeSubset returns true if every scope in requested is present in authorized.
+func isScopeSubset(requested, authorized string) bool {
+	auth := make(map[string]bool)
+	for _, s := range strings.Fields(authorized) {
+		auth[s] = true
+	}
+	for _, s := range strings.Fields(requested) {
+		if !auth[s] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func writeError(w http.ResponseWriter, code int, errCode, desc string) {
@@ -484,6 +637,7 @@ const loginFormHTML = `<!DOCTYPE html>
   <input type="hidden" name="code_challenge"         value="%s">
   <input type="hidden" name="code_challenge_method"  value="%s">
   <input type="hidden" name="response_type"          value="%s">
+  <input type="hidden" name="csrf_token"             value="%s">
   <label>Email or username<br><input type="text" name="email" autocomplete="username" required></label><br>
   <label>Password<br><input type="password" name="password" autocomplete="current-password" required></label><br>
   <button type="submit">Sign in</button>
@@ -495,13 +649,11 @@ const deviceVerifyHTML = `<!DOCTYPE html>
 </head><body>
 <h2>Device Authorization</h2>
 <form method="post" action="/device">
-  <input type="hidden" name="user_code" value="%s">
+  <input type="hidden" name="user_code"  value="%s">
+  <input type="hidden" name="csrf_token" value="%s">
   <label>Email or username<br><input type="text" name="email" autocomplete="username" required></label><br>
   <label>Password<br><input type="password" name="password" autocomplete="current-password" required></label><br>
   <p>User code: <strong>%s</strong></p>
   <button type="submit" name="action" value="approve" class="approve">Approve</button>
   <button type="submit" name="action" value="deny"    class="deny">Deny</button>
 </form></body></html>`
-
-// ensure time is used
-var _ time.Duration

@@ -19,11 +19,11 @@ import (
 // ── Config on disk ──────────────────────────────────────────────────────────
 
 type Config struct {
-	ServerURL          string    `mapstructure:"server_url"          yaml:"server_url"`
-	AccessToken        string    `mapstructure:"access_token"        yaml:"access_token"`
-	AccessTokenExpiry  time.Time `mapstructure:"access_token_expiry" yaml:"access_token_expiry"`
-	RefreshToken       string    `mapstructure:"refresh_token"       yaml:"refresh_token"`
-	ClientID           string    `mapstructure:"client_id"           yaml:"client_id"`
+	ServerURL         string    `mapstructure:"server_url"          yaml:"server_url"`
+	AccessToken       string    `mapstructure:"access_token"        yaml:"access_token"`
+	AccessTokenExpiry time.Time `mapstructure:"access_token_expiry" yaml:"access_token_expiry"`
+	RefreshToken      string    `mapstructure:"refresh_token"       yaml:"refresh_token"`
+	ClientID          string    `mapstructure:"client_id"           yaml:"client_id"`
 }
 
 var (
@@ -37,9 +37,9 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "vaultguard",
-	Short: "Vaultguard — identity and secrets management CLI",
-	Long: `vaultguard is the operator CLI for Vaultguard, a production-grade
-identity and secrets management platform for containerised infrastructure.`,
+	Short: "Vaultguard — policy-gated secret access CLI",
+	Long: `vaultguard is the operator CLI for Vaultguard, an opinionated tool that
+denies secret access unless the caller matches an explicit Vaultguard policy.`,
 	SilenceUsage: true,
 }
 
@@ -115,9 +115,9 @@ func saveConfig() error {
 // ── API client ───────────────────────────────────────────────────────────────
 
 type apiClient struct {
-	base   string
-	token  string
-	http   *http.Client
+	base  string
+	token string
+	http  *http.Client
 }
 
 func newAPIClient() *apiClient {

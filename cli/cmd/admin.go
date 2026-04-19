@@ -91,11 +91,11 @@ func fetchAndPrintAuditLog(c *apiClient, limit, offset int) error {
 	fmt.Println(strings.Repeat("─", 120))
 	for _, entry := range result.Logs {
 		t := truncate(fmt.Sprint(entry["event_time"]), 19)
-		outcome := fmt.Sprint(entry["outcome"])
-		actorType := truncate(fmt.Sprint(entry["actor_type"]), 8)
-		actor := truncate(fmt.Sprint(entry["actor_id"]), 30)
-		action := truncate(fmt.Sprint(entry["action"]), 40)
-		resource := truncate(fmt.Sprint(entry["resource"]), 40)
+		outcome := sanitize(fmt.Sprint(entry["outcome"]))
+		actorType := truncate(sanitize(fmt.Sprint(entry["actor_type"])), 8)
+		actor := truncate(sanitize(fmt.Sprint(entry["actor_id"])), 30)
+		action := truncate(sanitize(fmt.Sprint(entry["action"])), 40)
+		resource := truncate(sanitize(fmt.Sprint(entry["resource"])), 40)
 		fmt.Printf("%-20s  %-8s  %-10s  %-30s  %-40s  %s\n",
 			t, outcome, actorType, actor, action, resource)
 	}
@@ -125,10 +125,10 @@ func streamAuditLog(limit int) error {
 					t := truncate(fmt.Sprint(entry["event_time"]), 19)
 					fmt.Printf("[%s] %-8s %s → %s on %s\n",
 						t,
-						entry["outcome"],
-						entry["actor_id"],
-						entry["action"],
-						entry["resource"],
+						sanitize(fmt.Sprint(entry["outcome"])),
+						sanitize(fmt.Sprint(entry["actor_id"])),
+						sanitize(fmt.Sprint(entry["action"])),
+						sanitize(fmt.Sprint(entry["resource"])),
 					)
 				}
 			}
@@ -244,4 +244,42 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// sanitize strips ANSI escape sequences from server-returned strings to prevent
+// terminal injection when printing audit log entries.
+func sanitize(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\x1b' {
+			if i+1 >= len(s) {
+				break
+			}
+			i++
+			switch s[i] {
+			case '[':
+				for i+1 < len(s) {
+					i++
+					if (s[i] >= '@' && s[i] <= '~') || (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z') {
+						break
+					}
+				}
+			case ']':
+				for i+1 < len(s) {
+					i++
+					if s[i] == '\a' || (s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '\\') {
+						if s[i] == '\x1b' {
+							i++
+						}
+						break
+					}
+				}
+			default:
+				// Drop single-character escape sequences as well.
+			}
+		} else if s[i] >= 0x20 || s[i] == '\n' || s[i] == '\r' || s[i] == '\t' {
+			out.WriteByte(s[i])
+		}
+	}
+	return out.String()
 }

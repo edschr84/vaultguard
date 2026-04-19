@@ -55,7 +55,10 @@ const sqlDeletePolicyBinding = `
 	WHERE policy_id = $1 AND subject_type = $2 AND subject_id = $3`
 
 func (db *DB) CreatePolicy(ctx context.Context, p identity.CreatePolicyParams) (identity.PolicyRow, error) {
-	rulesJSON, _ := json.Marshal(p.Rules)
+	rulesJSON, err := json.Marshal(p.Rules)
+	if err != nil {
+		return identity.PolicyRow{}, fmt.Errorf("marshal policy rules: %w", err)
+	}
 	return db.scanPolicy(db.pool.QueryRow(ctx, sqlCreatePolicy,
 		p.Name, p.Description, p.RegoSource, string(rulesJSON),
 	))
@@ -90,7 +93,10 @@ func (db *DB) ListPolicies(ctx context.Context, limit, offset int32) ([]identity
 func (db *DB) UpdatePolicy(ctx context.Context, p identity.UpdatePolicyParams) (identity.PolicyRow, error) {
 	var rulesJSON *string
 	if p.Rules != nil {
-		b, _ := json.Marshal(*p.Rules)
+		b, err := json.Marshal(*p.Rules)
+		if err != nil {
+			return identity.PolicyRow{}, fmt.Errorf("marshal policy rules: %w", err)
+		}
 		s := string(b)
 		rulesJSON = &s
 	}

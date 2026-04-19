@@ -360,7 +360,7 @@ func (p *Provider) ExchangeCode(ctx context.Context, code, redirectURI, verifier
 
 	// PKCE check
 	if row.CodeChallenge != nil && *row.CodeChallenge != "" {
-		method := "plain"
+		method := "S256"
 		if row.CodeChallengeMethod != nil {
 			method = *row.CodeChallengeMethod
 		}

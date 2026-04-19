@@ -1,7 +1,8 @@
 package middleware
 
 import (
-	"fmt"
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
 	"time"
 
@@ -42,10 +43,10 @@ func RequestID(next http.Handler) http.Handler {
 
 func generateRequestID() string {
 	b := make([]byte, 8)
-	// Use time-based ID as fallback — not cryptographic, just for correlation
-	ts := time.Now().UnixNano()
-	for i := range b {
-		b[i] = byte(ts >> (i * 8))
+	if _, err := rand.Read(b); err != nil {
+		// fallback: zero bytes produce an obviously-invalid ID rather than a predictable one
+		return "00000000000000000000"
 	}
-	return fmt.Sprintf("%x", b)
+	return hex.EncodeToString(b)
 }
+

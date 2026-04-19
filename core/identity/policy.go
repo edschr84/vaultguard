@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,8 +11,8 @@ import (
 
 // Rule is a simple allow/deny rule used by the built-in policy engine.
 type Rule struct {
-	Effect   string   `json:"effect"`   // "allow" | "deny"
-	Actions  []string `json:"actions"`  // e.g. ["secret.read", "secret.write"]
+	Effect    string   `json:"effect"`    // "allow" | "deny"
+	Actions   []string `json:"actions"`   // e.g. ["secret.read", "secret.write"]
 	Resources []string `json:"resources"` // glob patterns e.g. ["ci/docker/*"]
 }
 
@@ -116,14 +115,11 @@ func (s *PolicyService) CreateOrUpdate(ctx context.Context, p CreatePolicyParams
 	existing, err := s.store.GetPolicyByName(ctx, p.Name)
 	if err == nil {
 		// Update path
-		rulesJSON, _ := json.Marshal(p.Rules)
-		rulesStr := string(rulesJSON)
 		row, err := s.store.UpdatePolicy(ctx, UpdatePolicyParams{
 			ID:         existing.ID,
 			RegoSource: &p.RegoSource,
 			Rules:      &p.Rules,
 		})
-		_ = rulesStr
 		if err != nil {
 			return nil, err
 		}
@@ -193,19 +189,22 @@ func (s *PolicyService) Evaluate(ctx context.Context, subjectType, subjectID, ac
 }
 
 // matchesAny returns true if value matches any glob pattern in patterns.
+// A trailing "*" remains a recursive prefix match so existing policies like
+// "ci/docker/*" continue to match nested paths such as "ci/docker/team/app".
 func matchesAny(patterns []string, value string) bool {
 	for _, p := range patterns {
 		if p == "*" || p == value {
 			return true
 		}
-		if strings.HasSuffix(p, "*") {
-			prefix := strings.TrimSuffix(p, "*")
-			if strings.HasPrefix(value, prefix) {
-				return true
-			}
+		if len(p) > 1 && p[len(p)-1] == '*' && valueHasPrefix(value, p[:len(p)-1]) {
+			return true
 		}
 	}
 	return false
+}
+
+func valueHasPrefix(value, prefix string) bool {
+	return len(value) >= len(prefix) && value[:len(prefix)] == prefix
 }
 
 func rowToPolicy(r PolicyRow) (*Policy, error) {

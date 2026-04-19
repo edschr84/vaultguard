@@ -201,6 +201,10 @@ const sqlListVerifiableSigningKeys = `
 const sqlDeactivateSigningKey = `
 	UPDATE signing_keys SET active = FALSE, rotated_at = NOW() WHERE kid = $1`
 
+const sqlPruneSigningKeys = `
+	DELETE FROM signing_keys
+	WHERE active = FALSE AND rotated_at < NOW() - INTERVAL '2 hours'`
+
 func (db *DB) CreateSigningKey(ctx context.Context, p oidc.SigningKeyParams) error {
 	_, err := db.pool.Exec(ctx, sqlCreateSigningKey,
 		p.KID, p.PrivateKeyEnc, p.PublicKeyPEM, p.ExpiresAt,
@@ -232,6 +236,12 @@ func (db *DB) ListVerifiableSigningKeys(ctx context.Context) ([]oidc.SigningKeyR
 
 func (db *DB) DeactivateSigningKey(ctx context.Context, kid string) error {
 	_, err := db.pool.Exec(ctx, sqlDeactivateSigningKey, kid)
+	return err
+}
+
+// PruneSigningKeys deletes deactivated signing keys whose 2-hour overlap window has elapsed.
+func (db *DB) PruneSigningKeys(ctx context.Context) error {
+	_, err := db.pool.Exec(ctx, sqlPruneSigningKeys)
 	return err
 }
 

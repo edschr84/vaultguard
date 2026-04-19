@@ -1,6 +1,6 @@
 # server
 
-The Vaultguard HTTP server binary. Wires together the `core` OIDC engine, Vault engine, and Admin API behind a Chi router with TLS, rate-limiting, and Prometheus metrics.
+The Vaultguard HTTP server binary. Wires together OIDC, the vault store, and policy enforcement behind a Chi router with TLS, rate-limiting, and Prometheus metrics.
 
 ## Endpoints
 
@@ -27,6 +27,8 @@ The Vaultguard HTTP server binary. Wires together the `core` OIDC engine, Vault 
 | GET | `/v1/{ns}/{mount}/{path}/versions` | List all versions |
 | POST | `/v1/leases/renew` | Renew a lease |
 | POST | `/v1/leases/revoke` | Revoke a lease |
+
+Vault endpoints are deny-by-default and require a matching bound policy for the calling user or client.
 
 ### Admin (requires `admin` scope)
 | Method | Path | Description |

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
@@ -22,9 +23,14 @@ import (
 	"github.com/vaultguard/server/api"
 	"github.com/vaultguard/server/config"
 	"github.com/vaultguard/server/middleware"
-	servertls "github.com/vaultguard/server/tls"
 	"github.com/vaultguard/server/store"
+	servertls "github.com/vaultguard/server/tls"
 )
+
+var keyRotationFailures = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "vaultguard_key_rotation_failures_total",
+	Help: "Number of signing key rotation failures.",
+})
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -103,19 +109,32 @@ func main() {
 	r.Use(chimw.Recoverer)
 	r.Use(corsMiddleware(cfg.AllowedOrigins))
 	r.Use(middleware.RequestID)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB body limit
+			next.ServeHTTP(w, r)
+		})
+	})
 
-	oidcH := api.NewOIDCHandler(provider, km, tokenIssuer, userSvc, clientSvc, pg, cfg.IssuerURL)
+	oidcH := api.NewOIDCHandler(provider, km, tokenIssuer, userSvc, clientSvc, pg, pg, cfg.IssuerURL)
 	oidcH.Routes(r)
 
-	// Vault and Admin routes require auth
+	// Vault routes: bearer token + policy enforcement at the handler
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.BearerAuth(tokenIssuer))
 		r.Use(middleware.RateLimitByClientID(200, time.Minute))
 
-		vaultH := api.NewVaultHandler(secretStore, leaseManager)
+		vaultH := api.NewVaultHandler(secretStore, leaseManager, policySvc)
 		vaultH.Routes(r)
+	})
 
-		adminH := api.NewAdminHandler(userSvc, clientSvc, policySvc, km, pg)
+	// Admin routes: bearer token + admin scope, stricter rate limit
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.BearerAuth(tokenIssuer))
+		r.Use(middleware.RateLimitByClientID(30, time.Minute))
+		r.Use(middleware.RequireScope("admin"))
+
+		adminH := api.NewAdminHandler(userSvc, clientSvc, policySvc, km, pg, pg)
 		adminH.Routes(r)
 	})
 
@@ -124,10 +143,6 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
-
-	// Rate-limit OIDC auth/token endpoints
-	r.With(middleware.RateLimitPerIP(60, time.Minute)).Post("/token", nil)
-	r.With(middleware.RateLimitPerIP(30, time.Minute)).Get("/authorize", nil)
 
 	// ── Metrics server ────────────────────────────────────────────────────────
 	go func() {
@@ -143,7 +158,7 @@ func main() {
 		}
 	}()
 
-	// ── Key rotation goroutine ────────────────────────────────────────────────
+	// ── Key rotation + pruning goroutines ────────────────────────────────────
 	go func() {
 		ticker := time.NewTicker(cfg.KeyRotationInterval)
 		defer ticker.Stop()
@@ -153,7 +168,23 @@ func main() {
 				return
 			case <-ticker.C:
 				if err := km.Rotate(ctx); err != nil {
+					keyRotationFailures.Inc()
 					slog.Error("key rotation failed", "err", err)
+				}
+			}
+		}
+	}()
+	go func() {
+		// Prune expired deactivated keys every hour
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := pg.PruneSigningKeys(ctx); err != nil {
+					slog.Error("signing key pruning failed", "err", err)
 				}
 			}
 		}
@@ -251,6 +282,3 @@ func corsMiddleware(allowed []string) func(http.Handler) http.Handler {
 		})
 	}
 }
-
-// ensure net is used
-var _ net.IP

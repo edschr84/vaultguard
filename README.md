@@ -1,22 +1,20 @@
 # Vaultguard
 
-A production-grade, open-source identity and secrets management platform for containerised infrastructure.
+An opinionated runtime enforcement tool that denies secret access unless the caller passes VaultGuard policy checks.
 
 ## Architecture
 
 ```mermaid
 graph TD
     CLI["vaultguard CLI\n(cobra + viper)"]
-    UI["Future UI"]
     DockerPlugin["docker-credential-vaultguard\n(Docker credential helper)"]
     K8sCtrl["k8s-controller\n(controller-runtime)"]
     Server["server\n(Chi HTTP)"]
-    Core["core\n(OIDC + Vault + Identity)"]
-    PG[("PostgreSQL\n(identities, secrets, audit)")]
-    Redis[("Redis\n(sessions, grants, rate limits)")]
+    Core["core\n(OIDC + Vault + Policy)"]
+    PG[("PostgreSQL\n(policy, secrets, audit)")]
+    Redis[("Redis\n(rate limits, grants)")]
 
     CLI -->|Admin API| Server
-    UI -->|Admin API| Server
     DockerPlugin -->|Vault API| Server
     K8sCtrl -->|Vault API| Server
     Server --> Core
@@ -49,7 +47,16 @@ vaultguard login
 # 4. Write a secret
 vaultguard secret put ci/docker/registry-creds username=robot password=s3cr3t
 
-# 5. Read it back
+# 5. Grant read access to your identity
+cat > ci-read.json <<'EOF'
+[
+  {"effect":"allow","actions":["secret.read"],"resources":["ci/docker/*"]}
+]
+EOF
+vaultguard policy set ci-read ci-read.json
+vaultguard policy bind ci-read user <your-user-id>
+
+# 6. Read it back
 vaultguard secret get ci/docker/registry-creds
 ```
 

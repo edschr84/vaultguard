@@ -20,7 +20,7 @@ vaultguard --server https://vault.example.com login
 # Write a secret
 vaultguard secret put ci/docker/registry-creds username=robot password=s3cr3t
 
-# Read it back
+# Read it back after binding a matching policy
 vaultguard secret get ci/docker/registry-creds
 
 # Register a CI bot client
@@ -66,7 +66,6 @@ vaultguard client create --name "CI Bot" --type confidential \
 | Command | Description |
 |---|---|
 | `vaultguard policy set <name> rules.json` | Create/update policy from JSON rules |
-| `vaultguard policy set <name> policy.rego` | Create/update from Rego (OPA stub) |
 | `vaultguard policy list` | List all policies |
 | `vaultguard policy bind <name> user <user-id>` | Bind policy to user |
 | `vaultguard policy bind <name> client <client-id>` | Bind policy to client |

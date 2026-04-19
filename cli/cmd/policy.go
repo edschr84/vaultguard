@@ -25,19 +25,14 @@ func init() {
 
 var policySetCmd = &cobra.Command{
 	Use:   "set <name> [rules.json]",
-	Short: "Create or update a policy from a JSON rules file or Rego file",
+	Short: "Create or update a policy from a JSON rules file",
 	Long: `Upload a policy to Vaultguard.
 
 Rules file (JSON):
   [
     {"effect": "allow", "actions": ["secret.read"], "resources": ["ci/docker/*"]},
     {"effect": "deny",  "actions": ["secret.delete"], "resources": ["prod/*"]}
-  ]
-
-Rego file (OPA stub — stored but not yet evaluated):
-  package vaultguard
-  default allow = false
-  allow { input.action == "secret.read" }`,
+  ]`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: runPolicySet,
 }
@@ -54,7 +49,6 @@ func runPolicySet(cmd *cobra.Command, args []string) error {
 		"name":        name,
 		"description": desc,
 		"rules":       []any{},
-		"rego_source": "",
 	}
 
 	if len(args) == 2 {
@@ -65,15 +59,13 @@ func runPolicySet(cmd *cobra.Command, args []string) error {
 		}
 
 		if strings.HasSuffix(filePath, ".rego") {
-			body["rego_source"] = string(raw)
-		} else {
-			// Assume JSON rules
-			var rules []any
-			if err := json.Unmarshal(raw, &rules); err != nil {
-				return fmt.Errorf("parse rules JSON: %w", err)
-			}
-			body["rules"] = rules
+			return fmt.Errorf("rego policies are not supported")
 		}
+		var rules []any
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return fmt.Errorf("parse rules JSON: %w", err)
+		}
+		body["rules"] = rules
 	}
 
 	c := newAPIClient()
@@ -128,7 +120,7 @@ func runPolicyList(_ *cobra.Command, _ []string) error {
 
 var policyBindCmd = &cobra.Command{
 	Use:   "bind <policy-name> <subject-type> <subject-id>",
-	Short: "Bind a policy to a user, client, or group",
+	Short: "Bind a policy to a user or client",
 	Example: `  vaultguard policy bind ci-read user 550e8400-e29b-41d4-a716-446655440000
   vaultguard policy bind ci-read client my-ci-client`,
 	Args: cobra.ExactArgs(3),

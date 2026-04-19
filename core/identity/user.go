@@ -2,14 +2,15 @@ package identity
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/argon2"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
 )
 
 const (
@@ -196,27 +197,15 @@ func hashPassword(password string) (string, error) {
 
 // verifyPassword returns true if the password matches the stored Argon2id hash.
 func verifyPassword(password, encoded string) bool {
-	var saltB64, hashB64 string
-	n, _ := fmt.Sscanf(encoded, "%s", &saltB64)
-	if n != 1 {
+	parts := strings.SplitN(encoded, ":", 2)
+	if len(parts) != 2 {
 		return false
 	}
-	// Manual split on ':'
-	for i, c := range encoded {
-		if c == ':' {
-			saltB64 = encoded[:i]
-			hashB64 = encoded[i+1:]
-			break
-		}
-	}
-	if hashB64 == "" {
-		return false
-	}
-	salt, err := base64.RawStdEncoding.DecodeString(saltB64)
+	salt, err := base64.RawStdEncoding.DecodeString(parts[0])
 	if err != nil {
 		return false
 	}
-	expected, err := base64.RawStdEncoding.DecodeString(hashB64)
+	expected, err := base64.RawStdEncoding.DecodeString(parts[1])
 	if err != nil {
 		return false
 	}

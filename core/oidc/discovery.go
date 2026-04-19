@@ -50,6 +50,6 @@ func BuildDiscovery(issuerURL string) DiscoveryDocument {
 			"name", "email", "email_verified",
 			"preferred_username", "client_id", "scope",
 		},
-		CodeChallengeMethodsSupported: []string{"S256", "plain"},
+		CodeChallengeMethodsSupported: []string{"S256"},
 	}
 }

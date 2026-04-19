@@ -60,7 +60,10 @@ func LoadConfig() (*Config, error) {
 // HTTPClient returns an http.Client respecting the Insecure flag.
 func (c *Config) HTTPClient() *http.Client {
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: c.Insecure}, //nolint:gosec
+		TLSClientConfig: &tls.Config{ //nolint:gosec
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: c.Insecure,
+		},
 	}
 	return &http.Client{Timeout: 10 * time.Second, Transport: transport}
 }

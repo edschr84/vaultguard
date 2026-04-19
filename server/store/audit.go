@@ -59,7 +59,10 @@ const sqlAppendAuditLog = `
 
 // Log implements vault.AuditLogger.
 func (db *DB) Log(ctx context.Context, event vault.AuditEvent) error {
-	detail, _ := json.Marshal(event.Detail)
+	detail, err := json.Marshal(event.Detail)
+	if err != nil {
+		detail = []byte("{}")
+	}
 
 	var remoteIP pgtype.Text
 	if ip, ok := ctx.Value(ctxKeyRemoteIP{}).(net.IP); ok && ip != nil {
@@ -70,7 +73,7 @@ func (db *DB) Log(ctx context.Context, event vault.AuditEvent) error {
 		requestID = pgtype.Text{String: rid, Valid: true}
 	}
 
-	_, err := db.pool.Exec(ctx, sqlAppendAuditLog,
+	_, err = db.pool.Exec(ctx, sqlAppendAuditLog,
 		event.ActorType, event.ActorID, event.Action, event.Resource, event.Outcome,
 		remoteIP, requestID, detail,
 	)

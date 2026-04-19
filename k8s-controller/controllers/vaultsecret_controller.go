@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -199,6 +200,10 @@ func (r *VaultSecretReconciler) vaultguardClient(ctx context.Context, vs *vaultg
 	if serverURL == "" || clientID == "" || clientSecret == "" {
 		return nil, fmt.Errorf("credentials secret must have server_url, client_id, client_secret")
 	}
+	u, err := url.Parse(serverURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("invalid server_url: must be an absolute http/https URL")
+	}
 
 	token, err := fetchClientCredentialsToken(serverURL, clientID, clientSecret)
 	if err != nil {
@@ -214,14 +219,22 @@ func (r *VaultSecretReconciler) vaultguardClient(ctx context.Context, vs *vaultg
 
 // fetchClientCredentialsToken performs an OAuth2 client_credentials token request.
 func fetchClientCredentialsToken(serverURL, clientID, clientSecret string) (string, error) {
-	body := fmt.Sprintf("grant_type=client_credentials&client_id=%s&client_secret=%s&scope=vault:read",
-		clientID, clientSecret)
-	resp, err := http.Post(serverURL+"/token", "application/x-www-form-urlencoded", strings.NewReader(body))
+	data := url.Values{}
+	data.Set("grant_type", "client_credentials")
+	data.Set("client_id", clientID)
+	data.Set("client_secret", clientSecret)
+	data.Set("scope", "vault:read")
+	resp, err := http.Post(serverURL+"/token",
+		"application/x-www-form-urlencoded",
+		strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return "", fmt.Errorf("read response body: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(raw))
 	}
@@ -251,7 +264,10 @@ func (c *vaultguardClient) getSecret(path string) (map[string]string, int32, err
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read response body: %w", err)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		var e map[string]string
